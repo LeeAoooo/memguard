@@ -71,7 +71,8 @@ struct event_info{
 
 	char name[20];
 	char counter[20];
-	unsigned long counter_val;
+	int counter_val;
+	int mb_budget;
 	int budget;
 
 	u64 used_budget;
@@ -130,6 +131,7 @@ struct core_info {
 	long period_cnt;         /* active periods count */
 
 	struct event_info *head;
+	struct event_info *tail;
 };
 
 /* global info */
@@ -397,7 +399,7 @@ static void event_info_overflow_callback(struct perf_event *event,
 	BUG_ON(!cinfo);
 	while(temp != NULL)
 	{
-		if(temp->event == event)
+		if(temp->event->attr.config == event->attr.config)
 		{
 			irq_work_queue(&temp->pending);
 			break;
@@ -518,8 +520,8 @@ static void memguard_process_overflow(struct irq_work *entry)
 		}
 	}
 
-	if (cinfo->prev_throttle_error)
-		return;
+	//if (cinfo->prev_throttle_error)
+	//	return;
 	/*
 	 * fail to reclaim. now throttle this core
 	 */
@@ -540,13 +542,11 @@ static void memguard_event_overflow(struct irq_work *entry)
 	struct memguard_info *global = &memguard_info;
 	struct event_info *temp = cinfo->head;
 	int no_throttle_error = 1;
-	ktime_t start;
+	ktime_t start = ktime_get();
 	s64 budget_used;
 
 	while(temp != NULL)
 	{
-		start = ktime_get();
-
 		BUG_ON(in_nmi() || !in_irq());
 
 		budget_used = memguard_event_info_used(temp);
@@ -554,7 +554,7 @@ static void memguard_event_overflow(struct irq_work *entry)
 		if (budget_used < temp->cur_budget) {
 			trace_printk("ERR: overflow in timer. used %lld < cur_budget %d. ignore\n",
 				     budget_used, temp->cur_budget);
-			return;
+			break;
 		}
 
 		// no more overflow interrupt
@@ -617,8 +617,8 @@ static void memguard_event_overflow(struct irq_work *entry)
 		}
 	}
 
-	if (no_throttle_error)
-		return;
+	//if (no_throttle_error)
+	//	return;
 	/*
 	 * fail to reclaim. now throttle this core
 	 */
@@ -720,7 +720,7 @@ static void period_timer_callback_slave(void *info)
 
 	while(temp != NULL)
 	{
-		temp->event->pmu->stop(cinfo->event, PERF_EF_UPDATE);
+		temp->event->pmu->stop(temp->event, PERF_EF_UPDATE);
 
 		if(temp->limit > 0)
 		{
@@ -846,7 +846,7 @@ static struct perf_event *init_counter(int cpu, int budget)
 	return event;
 }
 
-static struct perf_event *init_event_counter(int cpu, unsigned long counter, int budget)
+static struct perf_event *init_event_counter(int cpu, int counter, int budget)
 {
 	struct perf_event *event = NULL;
 	struct perf_event_attr sched_perf_hw_attr = {
@@ -858,6 +858,8 @@ static struct perf_event *init_event_counter(int cpu, unsigned long counter, int
 		.disabled	= 1,
 		.exclude_kernel = 1,   /* TODO: 1 mean, no kernel mode counting */
 	};
+
+	pr_info("%llx\n", sched_perf_hw_attr.config);
 
 	/* select based on requested event type */
 	sched_perf_hw_attr.sample_period = budget;
@@ -898,18 +900,21 @@ static struct perf_event *init_event_counter(int cpu, unsigned long counter, int
 
 static struct event_info* create_event_info(int cpu, char name[20], char counter[20], int budget)
 {
+	long temp_counter;
 	struct event_info *new = kmalloc(sizeof(struct event_info), GFP_KERNEL);
+	int temp_budget = convert_mb_to_events(budget);
 	new->next = NULL;
 	strcpy(new->name, name);
-	new->budget = budget;
+	new->mb_budget = budget;
 	strcpy(new->counter, counter);
-	if(!kstrtoul(counter, 0, &new->counter_val)) {}
+	if(!kstrtol(counter, 0, &temp_counter)) {}
+	new->counter_val = (int)temp_counter;	//sscanf(name, "%xu", &new->counter_val);
 
-	pr_info("Created event_info for cpu%i %s\n", cpu, new->counter);
+	pr_info("Created event_info for cpu %i %s %i\n", cpu, new->counter, new->counter_val);
 
-	new->event = init_event_counter(cpu, new->counter_val, new->budget);
+	new->event = init_event_counter(cpu, new->counter_val, temp_budget);
 
-	new->limit = new->event->hw.sample_period;
+	new->budget = new->limit = new->event->hw.sample_period;
 
 	new->used[0] = new->used[1] = new->used[2] = new->budget;
 	new->cur_budget = new->budget;
@@ -1344,7 +1349,7 @@ static int events_show(struct seq_file *m, void *v)
 		struct event_info* temp = cinfo->head;
 		while(temp != NULL)
 		{
-			seq_printf(m, "%s %s %d\n", temp->name, temp->counter, temp->budget);
+			seq_printf(m, "%s %s %d (%d)\n", temp->name, temp->counter, temp->mb_budget, temp->budget);
 			temp = temp->next;
 		}
 	}
@@ -1505,8 +1510,9 @@ int init_module( void )
 					       cpu_to_node(i),
 					       "kthrottle/%d", i);
 
-		cinfo->head = create_event_info(i, "read_limit", "0x17", 500);
+		cinfo->head = create_event_info(i, "read_limit", "0x17", 300);
 		cinfo->head->next = create_event_info(i, "write_limit", "0x18", 100);
+		cinfo->tail = cinfo->head->next;
 
 		BUG_ON(IS_ERR(cinfo->throttle_thread));
 		kthread_bind(cinfo->throttle_thread, i);
