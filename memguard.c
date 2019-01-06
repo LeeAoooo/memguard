@@ -85,7 +85,6 @@ struct event_info{
 	int used[3];
 
 	struct event_info *next;
-	struct event_info *prev;
 };
 
 struct memstat{
@@ -568,7 +567,7 @@ static void memguard_event_overflow(struct irq_work *entry)
 		}
 		else
 		{
-			printk(KERN_INFO "EVENT %s OVERFLOW\n", temp->name);
+			//printk(KERN_INFO "EVENT %s OVERFLOW\n", temp->name);
 			no_throttle_error = 0;
 		}
 
@@ -900,6 +899,7 @@ static struct perf_event *init_event_counter(int cpu, unsigned long counter, int
 static struct event_info* create_event_info(int cpu, char name[20], char counter[20], int budget)
 {
 	struct event_info *new = kmalloc(sizeof(struct event_info), GFP_KERNEL);
+	new->next = NULL;
 	strcpy(new->name, name);
 	new->budget = budget;
 	strcpy(new->counter, counter);
@@ -917,9 +917,6 @@ static struct event_info* create_event_info(int cpu, char name[20], char counter
 	new->assigned_budget = 0;
 
 	init_irq_work(&new->pending, memguard_event_overflow);
-
-	new->next = NULL;
-	new->prev = NULL;
 
 	return new;
 }
@@ -1510,7 +1507,6 @@ int init_module( void )
 
 		cinfo->head = create_event_info(i, "read_limit", "0x17", 500);
 		cinfo->head->next = create_event_info(i, "write_limit", "0x18", 100);
-		cinfo->head->next->prev = cinfo->head;
 
 		BUG_ON(IS_ERR(cinfo->throttle_thread));
 		kthread_bind(cinfo->throttle_thread, i);
@@ -1571,10 +1567,6 @@ void cleanup_module( void )
 			temp->event = NULL;
 
 			cinfo->head = temp->next;
-			if(temp->next != NULL)
-			{
-				cinfo->head->prev = NULL;
-			}
 			kfree(temp);
 			temp = cinfo->head;
 		}
