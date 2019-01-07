@@ -86,6 +86,7 @@ struct event_info{
 	int used[3];
 
 	struct event_info *next;
+	struct event_info *prev;
 };
 
 struct memstat{
@@ -567,7 +568,6 @@ static void memguard_event_overflow(struct irq_work *entry)
 		}
 		else
 		{
-			//printk(KERN_INFO "EVENT %s OVERFLOW\n", temp->name);
 			no_throttle_error = 0;
 		}
 
@@ -859,8 +859,6 @@ static struct perf_event *init_event_counter(int cpu, int counter, int budget)
 		.exclude_kernel = 1,   /* TODO: 1 mean, no kernel mode counting */
 	};
 
-	pr_info("%llx\n", sched_perf_hw_attr.config);
-
 	/* select based on requested event type */
 	sched_perf_hw_attr.sample_period = budget;
 
@@ -908,11 +906,10 @@ static struct event_info* create_event_info(int cpu, char name[20], char counter
 	new->mb_budget = budget;
 	strcpy(new->counter, counter);
 	if(!kstrtol(counter, 0, &temp_counter)) {}
-	new->counter_val = (int)temp_counter;	//sscanf(name, "%xu", &new->counter_val);
-
-	pr_info("Created event_info for cpu %i %s %i\n", cpu, new->counter, new->counter_val);
+	new->counter_val = (int)temp_counter;
 
 	new->event = init_event_counter(cpu, new->counter_val, temp_budget);
+	new->event->pmu->add(new->event, PERF_EF_START);
 
 	new->budget = new->limit = new->event->hw.sample_period;
 
@@ -1150,12 +1147,10 @@ static ssize_t events_write(struct file *filp,
 				    const char __user *ubuf,
 				    size_t cnt, loff_t *ppos)
 {
-    /*char buf[BUF_SIZE];
+    char buf[BUF_SIZE];
 	char *p = buf;
     int event_budget;
     char event_name[20],event_counter[20];
-    struct event_node *new = kmalloc(sizeof(struct event_node), GFP_KERNEL);
-    struct event_node *temp = events_head;
     int i;
 
 	if (copy_from_user(&buf, ubuf, (cnt > BUF_SIZE) ? BUF_SIZE: cnt) != 0)
@@ -1167,85 +1162,25 @@ static ssize_t events_write(struct file *filp,
         if(event_name == NULL || event_counter == NULL || event_budget == 0)
         {
             pr_err("ERR: Too few event details\n");
-            kfree(new);
             return cnt;
         }
 
-
-        strcpy(new->ev.event_name, event_name);
-        strcpy(new->ev.event_counter, event_counter);
-        new->ev.event_budget = event_budget;
-
-        get_online_cpus();
         for_each_online_cpu(i) {
-            int budget;
-            new->ev.event_cinfo[i] = per_cpu_ptr(core_info, i);
+            struct core_info *cinfo = per_cpu_ptr(core_info, i);
+			struct event_info *new = create_event_info(i, event_name, event_counter, event_budget);
 
-            budget = convert_mb_to_events(new->ev.event_budget);
-            pr_info("budget[%d] = %d (%d MB)\n", i, budget, new->ev.event_budget);
-
-            //memset(new->ev.event_cinfo[i], 0, sizeof(struct core_info));
-
-            new->ev.event_cinfo[i]->event = init_event_counter(i, new);
-            if (!new->ev.event_cinfo[i]->event)
-                break;
-
-            new->ev.event_cinfo[i]->budget = new->ev.event_cinfo[i]->limit = new->ev.event_cinfo[i]->event->hw.sample_period;
-
-            new->ev.event_cinfo[i]->throttled_task = NULL;
-
-            init_waitqueue_head(&new->ev.event_cinfo[i]->throttle_evt);
-
-            new->ev.event_cinfo[i]->period_cnt = 0;
-            new->ev.event_cinfo[i]->used[0] = new->ev.event_cinfo[i]->used[1] = new->ev.event_cinfo[i]->used[2] =
-                new->ev.event_cinfo[i]->budget;
-            new->ev.event_cinfo[i]->cur_budget = new->ev.event_cinfo[i]->budget;
-            new->ev.event_cinfo[i]->overall.used_budget = 0;
-            new->ev.event_cinfo[i]->overall.assigned_budget = 0;
-            new->ev.event_cinfo[i]->overall.throttled_time_ns = 0;
-            new->ev.event_cinfo[i]->overall.throttled = 0;
-            new->ev.event_cinfo[i]->overall.throttled_error = 0;
-
-            memset(new->ev.event_cinfo[i]->overall.throttled_error_dist, 0, sizeof(int)*10);
-            new->ev.event_cinfo[i]->throttled_time = ktime_set(0,0);
-
-            print_core_info(smp_processor_id(), new->ev.event_cinfo[i]);
-
-            init_irq_work(&new->ev.event_cinfo[i]->pending, memguard_event_overflow);
-
-            new->ev.event_cinfo[i]->throttle_thread =
-                kthread_create_on_node(throttle_thread,
-                               (void *)((unsigned long)i),
-                               cpu_to_node(i),
-                               "kthrottle/%d", i);
-
-            BUG_ON(IS_ERR(new->ev.event_cinfo[i]->throttle_thread));
-            kthread_bind(new->ev.event_cinfo[i]->throttle_thread, i);
-            wake_up_process(new->ev.event_cinfo[i]->throttle_thread);
-        }
-
-        if(events_head == NULL)
-        {
-            events_head = new;
-            events_head->next = NULL;
-            events_head->prev = NULL;
-
-            events_tail = events_head;
-            events_tail->next = NULL;
-            events_tail->prev = NULL;
-        }
-        else
-        {
-            new->next = NULL;
-            new->prev = events_tail;
-
-            events_tail->next = new;
-            events_tail = new;
-        }
-
-        for_each_online_cpu(i)
-        {
-            new->ev.event_cinfo[i]->event->pmu->add(new->ev.event_cinfo[i]->event, PERF_EF_START);
+            struct event_info* temp = cinfo->tail;
+			if(temp == NULL)
+			{
+				cinfo->head = new;
+				cinfo->tail = cinfo->head;
+			}
+			else
+			{
+				new->prev = cinfo->tail;
+				cinfo->tail->next = new;
+				cinfo->tail = cinfo->tail->next;
+			}
         }
 	}
     else if (!strncmp(p, "del ", 4)) {
@@ -1257,29 +1192,42 @@ static ssize_t events_write(struct file *filp,
             return cnt;
         }
 
-        while(temp != NULL)
-        {
-            if(!strcmp(temp->ev.event_name, event_name))
-            {
-                disable_event(temp);
+		for_each_online_cpu(i) {
+            struct core_info *cinfo = per_cpu_ptr(core_info, i);
 
-                if(temp == events_head)
-                {
-                    events_head = temp->next;
-                }
-                if(temp->next != NULL)
-                {
-                    temp->next->prev = temp->prev;
-                }
-                if(temp->prev != NULL)
-                {
-                    temp->prev->next = temp->next;
-                }
+            struct event_info* temp = cinfo->head;
+			while(temp != NULL)
+			{
+				if(!strcmp(temp->name, event_name))
+				{
+					if(temp == cinfo->head)
+					{
+						cinfo->head = temp->next;
+					}
+					if(temp == cinfo->tail)
+					{
+						cinfo->tail = temp->prev;
+					}
+					if(temp->prev != NULL)
+					{
+						temp->prev->next = temp->next;
+					}
+					if(temp->next != NULL)
+					{
+						temp->next->prev = temp->prev;
+					}
 
-                kfree(temp);
-                break;
-            }
-            temp = temp->next;
+					temp->event->pmu->stop(temp->event, PERF_EF_UPDATE);
+					temp->event->pmu->del(temp->event, 0);
+					perf_event_disable(temp->event);
+					perf_event_release_kernel(temp->event);
+					temp->event = NULL;
+					kfree(temp);
+					temp = NULL;
+					break;
+				}
+				temp = temp->next;
+			}
         }
     }
     else if (!strncmp(p, "bud ", 4)) {
@@ -1290,68 +1238,43 @@ static ssize_t events_write(struct file *filp,
         {
             return cnt;
         }
-        while(temp != NULL)
-        {
-            if(!strcmp(temp->ev.event_name, event_name))
-            {
-                temp->ev.event_budget = event_budget;
-                get_online_cpus();
-                for_each_online_cpu(i)
-                {
-                    temp->ev.event_cinfo[i]->budget = event_budget;
-                }
-                break;
-            }
-            temp = temp->next;
+
+		for_each_online_cpu(i) {
+            struct core_info *cinfo = per_cpu_ptr(core_info, i);
+
+            struct event_info* temp = cinfo->head;
+			while(temp != NULL)
+			{
+				if(!strcmp(temp->name, event_name))
+				{
+					temp->mb_budget = event_budget;
+					temp->budget = convert_mb_to_events(temp->mb_budget);
+					temp->limit = convert_mb_to_events(temp->mb_budget);
+					break;
+				}
+				temp = temp->next;
+			}
         }
-    }*/
+    }
     return cnt;
 }
 
 static int events_show(struct seq_file *m, void *v)
 {
-    /*int i, cpu;
-	cpu = get_cpu();
-
-	seq_printf(m, "cpu  |budget (MB/s,pct,weight)\n");
-	seq_printf(m, "-------------------------------\n");
-
-	for_each_online_cpu(i) {
-		struct core_info *cinfo = per_cpu_ptr(core_info, i);
-		int budget = 0;
-		if (cinfo->limit > 0)
-			budget = cinfo->limit;
-
-		WARN_ON_ONCE(budget == 0);
-		seq_printf(m, "CPU%d: %d (%dMB/s)\n",
-				   i, budget,
-				   convert_events_to_mb(budget));
-	}
-#if USE_BWLOCK
-	struct memguard_info *global = &memguard_info;
-	seq_printf(m, "bwlocked_core: %d\n", global->bwlocked_cores);
-#endif
-
-	put_cpu();
-	return 0;
-
-    struct event_node *temp = events_head;
-    while(temp != NULL)
-    {
-        seq_printf(m, "%s %s %d\n", temp->ev.event_name, temp->ev.event_counter, temp->ev.event_budget);
-        temp = temp->next;
-    }*/
-
 	int i;
+	seq_printf(m, "\n");
 	for_each_online_cpu(i)
 	{
 		struct core_info *cinfo = per_cpu_ptr(core_info, i);
 		struct event_info* temp = cinfo->head;
+
+		seq_printf(m, "Event counters on CPU %i:\n", i);
 		while(temp != NULL)
 		{
-			seq_printf(m, "%s %s %d (%d)\n", temp->name, temp->counter, temp->mb_budget, temp->budget);
+			seq_printf(m, "\t%s\t%s\t%d(%dMB/s)\n", temp->name, temp->counter, temp->mb_budget, temp->budget);
 			temp = temp->next;
 		}
+		seq_printf(m, "\n");
 	}
     return 0;
 }
@@ -1510,9 +1433,8 @@ int init_module( void )
 					       cpu_to_node(i),
 					       "kthrottle/%d", i);
 
-		cinfo->head = create_event_info(i, "read_limit", "0x17", 300);
-		cinfo->head->next = create_event_info(i, "write_limit", "0x18", 100);
-		cinfo->tail = cinfo->head->next;
+		cinfo->head = NULL;
+		cinfo->tail = NULL;
 
 		BUG_ON(IS_ERR(cinfo->throttle_thread));
 		kthread_bind(cinfo->throttle_thread, i);
