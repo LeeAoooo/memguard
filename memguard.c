@@ -1271,7 +1271,7 @@ static int events_show(struct seq_file *m, void *v)
 		seq_printf(m, "Event counters on CPU %i:\n", i);
 		while(temp != NULL)
 		{
-			seq_printf(m, "\t%s\t%s\t%d(%dMB/s)\n", temp->name, temp->counter, temp->mb_budget, temp->budget);
+			seq_printf(m, "\t%s\t%s\t%d(%dMB/s)\n", temp->name, temp->counter, temp->budget, temp->mb_budget);
 			temp = temp->next;
 		}
 		seq_printf(m, "\n");
