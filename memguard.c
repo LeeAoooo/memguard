@@ -909,7 +909,7 @@ static struct event_info* create_event_info(int cpu, char name[20], char counter
 	new->counter_val = (int)temp_counter;
 
 	new->event = init_event_counter(cpu, new->counter_val, temp_budget);
-	new->event->pmu->add(new->event, PERF_EF_START);
+	//new->event->pmu->add(new->event, PERF_EF_START);
 
 	new->budget = new->limit = new->event->hw.sample_period;
 
@@ -1217,8 +1217,8 @@ static ssize_t events_write(struct file *filp,
 						temp->next->prev = temp->prev;
 					}
 
-					temp->event->pmu->stop(temp->event, PERF_EF_UPDATE);
-					temp->event->pmu->del(temp->event, 0);
+					//temp->event->pmu->stop(temp->event, PERF_EF_UPDATE);
+					//temp->event->pmu->del(temp->event, 0);
 					perf_event_disable(temp->event);
 					perf_event_release_kernel(temp->event);
 					temp->event = NULL;
